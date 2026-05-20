@@ -1,31 +1,33 @@
 /**
  * CommandCenter – Feature 4: Executive Command Center
  * ====================================================
- * Handles natural-language queries from the principal:
- *   "Show pending approvals"
- *   "Which department has maximum workload?"
- *   "Find all discussions about accreditation"
- *   "Who are the key coordinators keeping placements moving?"
- *   "What bottlenecks are affecting approvals?"
- *   etc.
+ * Handles natural-language queries from the principal.
+ * Enhanced with RAG (Retrieval-Augmented Generation) using Ollama.
  */
 
 import { truncate, daysSince } from "./utils.js";
 
 export class CommandCenter {
-  constructor(kg, be, dt) {
+  constructor(kg, be, dt, ai = null) {
     this.kg = kg;
     this.be = be;
     this.dt = dt;
+    this.ai = ai; // OllamaEngine instance
   }
 
   /**
    * Main entry point — parses a natural language query and routes to the
-   * correct handler. Returns a structured result object.
+   * correct handler. Now asynchronous to support AI generation.
    */
-  query(naturalLanguageQuery) {
+  async query(naturalLanguageQuery) {
     const q = naturalLanguageQuery.toLowerCase().trim();
     const intent = this._classifyIntent(q);
+
+    // If AI is available and it's not a basic help/utility command, use RAG
+    if (this.ai && !["help", "email_summary", "full_briefing"].includes(intent)) {
+      return await this._ragQuery(naturalLanguageQuery);
+    }
+
     return this._dispatch(intent, q, naturalLanguageQuery);
   }
 
@@ -53,7 +55,7 @@ export class CommandCenter {
     return "search_topic"; // Default: treat as topic search
   }
 
-  _dispatch(intent, q, original) {
+  async _dispatch(intent, q, original) {
     switch (intent) {
       case "pending_approvals":   return this._pendingApprovals();
       case "department_workload": return this._departmentWorkload();
@@ -69,6 +71,80 @@ export class CommandCenter {
       case "help":                return this._help();
       default:                    return this._searchTopic(original);
     }
+  }
+
+  // ── RAG Implementation ────────────────────────────────────────────────────
+
+  /**
+   * Performs Retrieval-Augmented Generation:
+   * 1. Retrieves relevant data from Knowledge Graph and Engines
+   * 2. Formats as context
+   * 3. Prompts Ollama (Llama 3.2) for a strategic answer
+   */
+  async _ragQuery(query) {
+    // 1. Retrieval
+    const stopWords = ["find", "show", "all", "me", "the", "about", "related", "to", "discussion", "what", "is", "are", "tell", "details"];
+    const keywords = query.split(/\s+/)
+      .filter(w => w.length > 3 && !stopWords.includes(w.toLowerCase()))
+      .join(" ");
+
+    const searchTerm = keywords || query;
+    
+    // Get threads and emails
+    const threads = this.kg.searchByTopic(searchTerm);
+    const emails = this.kg.rawEmails.filter(e => {
+      const text = ((e.subject || "") + " " + (e._meta?.body || "")).toLowerCase();
+      return searchTerm.toLowerCase().split(/\s+/).some(k => k.length > 2 && text.includes(k));
+    }).slice(0, 10);
+
+    // Get relevant engine data if query matches certain patterns
+    let extraContext = "";
+    if (query.includes("workload") || query.includes("stress") || query.includes("department")) {
+      const depts = this.dt.getDepartmentHealth();
+      extraContext += `\nDepartment Health: ${JSON.stringify(depts.slice(0, 3))}`;
+    }
+    if (query.includes("risk") || query.includes("escalat") || query.includes("silent")) {
+      const risks = this.dt.getEscalationRisks();
+      extraContext += `\nEscalation Risks: ${JSON.stringify(risks)}`;
+    }
+
+    // 2. Context Construction
+    const context = `
+RELEVANT THREADS:
+${threads.slice(0, 5).map(t => `- ${t.subject} (Participants: ${[...t.participants].join(", ")})`).join("\n")}
+
+RELEVANT EMAILS:
+${emails.map((e, i) => `[${i+1}] FROM: ${e.from} | SUBJECT: ${e.subject}\nBODY PREVIEW: ${truncate(e._meta?.body || e.body, 200)}`).join("\n\n")}
+
+INSTITUTIONAL METRICS:
+${extraContext}
+    `.trim();
+
+    const systemPrompt = `You are a professional Executive Chief of Staff AI for an institution principal.
+You have access to the institution's communication "Knowledge Graph" and "Digital Twin" metrics.
+Your goal is to answer queries based ONLY on the provided context.
+If the information is not in the context, say you don't have enough data to answer precisely.
+Always be professional, objective, and highlight risks or actions if found.
+Keep the answer concise and formatted in Markdown.`;
+
+    const prompt = `CONTEXT:\n${context}\n\nUSER QUERY: ${query}\n\nProvide a strategic answer based on the institutional data provided above.`;
+
+    // 3. Generation
+    const aiResponse = await this.ai.generate(prompt, systemPrompt);
+
+    if (!aiResponse) {
+      // Fallback to rule-based if AI fails
+      const intent = this._classifyIntent(query.toLowerCase());
+      return await this._dispatch(intent, query.toLowerCase(), query);
+    }
+
+    return {
+      status: "ok",
+      title: "🤖 AI Executive Intelligence",
+      summary: aiResponse,
+      sourceCount: threads.length + emails.length,
+      isAiGenerated: true
+    };
   }
 
   // ── Handlers ───────────────────────────────────────────────────────────────
@@ -176,7 +252,7 @@ export class CommandCenter {
         subject: e.subject,
         from: e.from,
         date: e.date,
-        preview: truncate(e._meta?.body, 120),
+        preview: truncate(e._meta?.body || e.body, 120),
       })),
     };
   }
@@ -287,7 +363,7 @@ export class CommandCenter {
         date: e.date,
         priority: e._meta?.priority || "normal",
         topics: e._meta?.topics || [],
-        preview: truncate(e._meta?.body, 150),
+        preview: truncate(e._meta?.body || e.body, 150),
       })),
     };
   }

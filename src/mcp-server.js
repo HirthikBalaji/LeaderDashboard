@@ -241,9 +241,9 @@ export class MCPServer {
     }
   }
 
-  _handleToolCall(id, toolName, args) {
+  async _handleToolCall(id, toolName, args) {
     try {
-      const result = this._executeTool(toolName, args);
+      const result = await this._executeTool(toolName, args);
       this._reply(id, {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       });
@@ -255,7 +255,7 @@ export class MCPServer {
     }
   }
 
-  _executeTool(name, args) {
+  async _executeTool(name, args) {
     switch (name) {
       case "load_emails": {
         const { emails, reset = false } = args;
@@ -294,7 +294,7 @@ export class MCPServer {
         const { query } = args;
         if (!query) throw new Error("query is required");
         this._requireData();
-        return this.cc.query(query);
+        return await this.cc.query(query);
       }
 
       case "get_predictions": {
