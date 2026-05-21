@@ -3,7 +3,7 @@
  */
 
 export class OllamaEngine {
-  constructor(model = "llama3.2", host = "http://localhost:11434") {
+  constructor(model = "gemma4:latest", host = "http://172.19.140.109:11434") {
     this.model = model;
     this.host = host;
   }
