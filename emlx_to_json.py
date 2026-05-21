@@ -71,8 +71,15 @@ def main():
         return
 
     # Find all .emlx files recursively
-    emlx_files = glob.glob(os.path.join(mbox_dir, "**/*.emlx"), recursive=True)
-    
+    emlx_files = []
+
+    for root, dirs, files in os.walk(mbox_dir):
+        for file in files:
+            if file.endswith(".emlx"):
+                emlx_files.append(os.path.join(root, file))
+
+    print("Found:", len(emlx_files))
+
     print(f"Found {len(emlx_files)} emails. Processing...")
     
     emails = []
